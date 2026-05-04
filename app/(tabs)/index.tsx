@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Linking,
   Modal,
@@ -21,6 +22,8 @@ type Shortcut = {
   code: string;
 };
 
+const SHORTCUTS_STORAGE_KEY = 'bxutility.shortcuts';
+
 const DEFAULT_SHORTCUTS: Shortcut[] = [
   { id: 'button-1', label: 'Balance Check' },
   { id: 'button-2', label: '100 Menu' },
@@ -39,6 +42,8 @@ export default function HomeScreen() {
   const [newLabel, setNewLabel] = useState('');
   const [newCode, setNewCode] = useState('');
   const [formError, setFormError] = useState('');
+  const [isHydrated, setIsHydrated] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const inputColors = useMemo(
     () => ({
@@ -53,7 +58,14 @@ export default function HomeScreen() {
     void Linking.openURL(`tel:${encodeURIComponent(code)}`);
   };
 
-  const addShortcut = () => {
+  const resetForm = () => {
+    setNewLabel('');
+    setNewCode('');
+    setEditingId(null);
+    setFormError('');
+  };
+
+  const saveShortcut = () => {
     const label = newLabel.trim();
     const code = newCode.trim();
     if (!label || !code) {
@@ -61,14 +73,80 @@ export default function HomeScreen() {
       return;
     }
 
-    setShortcuts((current) => [
-      ...current,
-      { id: `${Date.now()}`, label, code },
-    ]);
-    setNewLabel('');
-    setNewCode('');
+    setShortcuts((current) => {
+      if (!editingId) {
+        return [...current, { id: `${Date.now()}`, label, code }];
+      }
+
+      return current.map((shortcut) =>
+        shortcut.id === editingId ? { ...shortcut, label, code } : shortcut
+      );
+    });
+    resetForm();
+  };
+
+  const startEditing = (shortcut: Shortcut) => {
+    setNewLabel(shortcut.label);
+    setNewCode(shortcut.code);
+    setEditingId(shortcut.id);
     setFormError('');
   };
+
+  const deleteShortcut = (shortcutId: string) => {
+    setShortcuts((current) => current.filter((shortcut) => shortcut.id !== shortcutId));
+    if (editingId === shortcutId) {
+      resetForm();
+    }
+  };
+
+  useEffect(() => {
+    const loadShortcuts = async () => {
+      try {
+        const storedValue = await AsyncStorage.getItem(SHORTCUTS_STORAGE_KEY);
+        if (!storedValue) {
+          setIsHydrated(true);
+          return;
+        }
+
+        const parsed = JSON.parse(storedValue) as unknown;
+        if (!Array.isArray(parsed)) {
+          setIsHydrated(true);
+          return;
+        }
+
+        const validShortcuts = parsed.filter((item): item is Shortcut => {
+          if (!item || typeof item !== 'object') {
+            return false;
+          }
+
+          const value = item as Record<string, unknown>;
+          return (
+            typeof value.id === 'string' &&
+            typeof value.label === 'string' &&
+            typeof value.code === 'string'
+          );
+        });
+
+        if (validShortcuts.length > 0) {
+          setShortcuts(validShortcuts);
+        }
+      } catch {
+        // Keep defaults when persisted data is unavailable or invalid.
+      } finally {
+        setIsHydrated(true);
+      }
+    };
+
+    void loadShortcuts();
+  }, []);
+
+  useEffect(() => {
+    if (!isHydrated) {
+      return;
+    }
+
+    void AsyncStorage.setItem(SHORTCUTS_STORAGE_KEY, JSON.stringify(shortcuts));
+  }, [isHydrated, shortcuts]);
 
   return (
     <ThemedView style={styles.screen}>
@@ -123,6 +201,35 @@ export default function HomeScreen() {
             </View>
 
             <ScrollView contentContainerStyle={styles.formContent}>
+              <ThemedText style={styles.sectionTitle}>Manage Shortcuts</ThemedText>
+              {shortcuts.map((shortcut) => (
+                <View
+                  key={shortcut.id}
+                  style={[
+                    styles.shortcutRow,
+                    {
+                      borderColor: colors.icon,
+                      backgroundColor: colors.background,
+                    },
+                  ]}>
+                  <View style={styles.shortcutMeta}>
+                    <ThemedText type="defaultSemiBold">{shortcut.label}</ThemedText>
+                    <ThemedText style={styles.shortcutCode}>{shortcut.code}</ThemedText>
+                  </View>
+                  <View style={styles.shortcutActions}>
+                    <Pressable onPress={() => startEditing(shortcut)} style={styles.actionBtn}>
+                      <ThemedText style={{ color: colors.tint }}>Edit</ThemedText>
+                    </Pressable>
+                    <Pressable onPress={() => deleteShortcut(shortcut.id)} style={styles.actionBtn}>
+                      <ThemedText style={styles.deleteText}>Delete</ThemedText>
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
+
+              <ThemedText style={styles.sectionTitle}>
+                {editingId ? 'Edit Shortcut' : 'Add Shortcut'}
+              </ThemedText>
               <ThemedText style={styles.inputLabel}>Shortcut Name</ThemedText>
               <TextInput
                 placeholder="e.g. Data Bundles"
@@ -161,13 +268,27 @@ export default function HomeScreen() {
 
               <Pressable
                 accessibilityRole="button"
-                onPress={addShortcut}
+                onPress={saveShortcut}
                 style={({ pressed }) => [
                   styles.addButton,
                   { backgroundColor: colors.tint, opacity: pressed ? 0.8 : 1 },
                 ]}>
-                <ThemedText style={styles.addButtonText}>Add Shortcut</ThemedText>
+                <ThemedText style={styles.addButtonText}>
+                  {editingId ? 'Update Shortcut' : 'Add Shortcut'}
+                </ThemedText>
               </Pressable>
+
+              {editingId ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={resetForm}
+                  style={({ pressed }) => [
+                    styles.cancelButton,
+                    { borderColor: colors.icon, opacity: pressed ? 0.8 : 1 },
+                  ]}>
+                  <ThemedText>Cancel Editing</ThemedText>
+                </Pressable>
+              ) : null}
             </ScrollView>
           </ThemedView>
         </View>
@@ -246,6 +367,38 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingBottom: 24,
   },
+  sectionTitle: {
+    marginTop: 8,
+    opacity: 0.8,
+  },
+  shortcutRow: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  shortcutMeta: {
+    flex: 1,
+  },
+  shortcutCode: {
+    marginTop: 4,
+    opacity: 0.7,
+  },
+  shortcutActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  actionBtn: {
+    paddingVertical: 2,
+  },
+  deleteText: {
+    color: '#d32f2f',
+  },
   inputLabel: {
     marginTop: 8,
     opacity: 0.75,
@@ -267,6 +420,14 @@ const styles = StyleSheet.create({
   addButtonText: {
     color: '#fff',
     fontWeight: '600',
+  },
+  cancelButton: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   errorText: {
     color: '#d32f2f',
